@@ -74,9 +74,9 @@ variables:
 ### Local Development
 ```bash
 cd nonprod
-terraform init
-terraform plan
-terraform apply
+make init
+make plan
+make apply
 ```
 
 ### Pipeline Deployment
