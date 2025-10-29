@@ -1,0 +1,131 @@
+stages:
+  - validate
+  - plan
+  - apply
+
+variables:
+  TF_STATE_REGION: "ap-southeast-2"
+
+.terraform_base: &terraform_base
+  image:
+    name: hashicorp/terraform:latest
+    entrypoint: [""]
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  before_script:
+    - apk add --no-cache aws-cli
+
+# Non-Production Environment
+.nonprod_base: &nonprod_base
+  <<: *terraform_base
+  variables:
+    TF_ROOT: nonprod
+    TF_STATE_BUCKET: "chaodev-tf-state-bucket"
+    TF_STATE_KEY: "nonprod/terraform.tfstate"
+    AWS_ROLE_ARN: ${AWS_ROLE_ARN_NONPROD}
+  before_script:
+    - apk add --no-cache aws-cli
+    - >
+      aws_sts_output=$(aws sts assume-role-with-web-identity
+      --role-arn ${AWS_ROLE_ARN}
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+      --web-identity-token ${GITLAB_OIDC_TOKEN}
+      --duration-seconds 3600
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+      --output text)
+    - export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s" $aws_sts_output)
+    - aws sts get-caller-identity
+
+# Production Environment
+.prod_base: &prod_base
+  <<: *terraform_base
+  variables:
+    TF_ROOT: prod
+    TF_STATE_BUCKET: "chaodev-tf-state-bucket"
+    TF_STATE_KEY: "prod/terraform.tfstate"
+    AWS_ROLE_ARN: ${AWS_ROLE_ARN_PROD}
+  before_script:
+    - apk add --no-cache aws-cli
+    - >
+      aws_sts_output=$(aws sts assume-role-with-web-identity
+      --role-arn ${AWS_ROLE_ARN}
+      --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+      --web-identity-token ${GITLAB_OIDC_TOKEN}
+      --duration-seconds 3600
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+      --output text)
+    - export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s" $aws_sts_output)
+    - aws sts get-caller-identity
+
+# Non-Production Jobs
+validate_nonprod:
+  <<: *nonprod_base
+  stage: validate
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform validate
+
+plan_nonprod:
+  <<: *nonprod_base
+  stage: plan
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - nonprod/tfplan
+    expire_in: 1 week
+
+apply_nonprod:
+  <<: *nonprod_base
+  stage: apply
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform apply -auto-approve tfplan
+  dependencies:
+    - plan_nonprod
+  only:
+    - main
+  when: manual
+
+# Production Jobs
+validate_prod:
+  <<: *prod_base
+  stage: validate
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform validate
+  only:
+    - main
+
+plan_prod:
+  <<: *prod_base
+  stage: plan
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - prod/tfplan
+    expire_in: 1 week
+  only:
+    - main
+
+apply_prod:
+  <<: *prod_base
+  stage: apply
+  script:
+    - cd $TF_ROOT
+    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform apply -auto-approve tfplan
+  dependencies:
+    - plan_prod
+  only:
+    - main
+  when: manual
