@@ -9,11 +9,3 @@ resource "aws_s3_bucket" "new_bucket" {
     Environment = "dev"
   }
 }
-
-resource "aws_s3_bucket" "new_bucket3" {
-  bucket = "chaodev-tf-managed-bucket-3-${random_id.bucket_suffix.hex}"
-  tags = {
-    Name        = "chaodev-tf-managed-bucket-${random_id.bucket_suffix.hex}"
-    Environment = "dev"
-  }
-}
