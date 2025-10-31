@@ -4,25 +4,29 @@ stages:
   - apply
 
 variables:
-  TF_STATE_REGION: "ap-southeast-2"
+  AWS_DEFAULT_REGION: "ap-southeast-2"
 
 .terraform_base: &terraform_base
   image:
-    name: hashicorp/terraform:latest
+    # Suggestion: instead of using the generic hashicorp/terraform:latest image (and installing extra tools via apk),
+    # consider building and using a custom Terraform CI image (e.g. myorg/terraform-ci) with required dependencies preinstalled.
+    # This ensures consistent versions, faster builds, and better reproducibility.
+    name: hashicorp/terraform:latest 
     entrypoint: [""]
   id_tokens:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.com
+  variables:
+    TF_HTTP_USERNAME: oauth2 # Don't change the default username
+    TF_HTTP_PASSWORD: $GITLAB_ACCESS_TOKEN
   before_script:
     - apk add --no-cache aws-cli
 
-# Non-Production Environment (nonprod branch)
+# Non-Production Environment
 .nonprod_base: &nonprod_base
   <<: *terraform_base
   variables:
-    TF_ROOT: nonprod
-    TF_STATE_BUCKET: "chaodev-tf-state-bucket"
-    TF_STATE_KEY: "terraform.tfstate"
+    TF_ROOT: infrastructure/nonprod
   before_script:
     - apk add --no-cache aws-cli
     - >
@@ -38,13 +42,14 @@ variables:
   only:
     - dev
 
-# Production Environment (main branch)
+# Production Environment (S3 Backend)
 .prod_base: &prod_base
   <<: *terraform_base
   variables:
-    TF_ROOT: prod
+    TF_ROOT: infrastructure/prod
     TF_STATE_BUCKET: "chao-terraform-tf-state-bucket-780a"
-    TF_STATE_KEY: "terraform.tfstate"
+    TF_STATE_KEY: "prod/terraform.tfstate"
+    TF_STATE_REGION: "ap-southeast-2"
   before_script:
     - apk add --no-cache aws-cli
     - >
@@ -57,8 +62,9 @@ variables:
       --output text)
     - export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s" $aws_sts_output)
     - aws sts get-caller-identity
-  only:
-    - main
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG =~ /^prod-.*/
 
 # Non-Production Jobs (validate/plan on all branches, apply only on dev)
 validate_nonprod:
@@ -68,7 +74,7 @@ validate_nonprod:
     - main
   script:
     - cd $TF_ROOT
-    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform init -backend-config="address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod" -backend-config="lock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="unlock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="username=oauth2" -backend-config="password=$GITLAB_ACCESS_TOKEN"
     - terraform validate
 
 plan_nonprod:
@@ -78,11 +84,11 @@ plan_nonprod:
     - main
   script:
     - cd $TF_ROOT
-    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform init -backend-config="address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod" -backend-config="lock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="unlock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="username=oauth2" -backend-config="password=$GITLAB_ACCESS_TOKEN"
     - terraform plan -out=tfplan
   artifacts:
     paths:
-      - nonprod/tfplan
+      - infrastructure/nonprod/tfplan
     expire_in: 1 day
 
 apply_nonprod:
@@ -92,7 +98,7 @@ apply_nonprod:
     - dev
   script:
     - cd $TF_ROOT
-    - terraform init -backend-config="bucket=${TF_STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${TF_STATE_REGION}"
+    - terraform init -backend-config="address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod" -backend-config="lock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="unlock_address=https://gitlab.com/api/v4/projects/75643650/terraform/state/chaodev-nonprod/lock" -backend-config="username=oauth2" -backend-config="password=$GITLAB_ACCESS_TOKEN"
     - terraform apply -auto-approve tfplan
   dependencies:
     - plan_nonprod
@@ -115,7 +121,7 @@ plan_prod:
     - terraform plan -out=tfplan
   artifacts:
     paths:
-      - prod/tfplan
+      - infrastructure/prod/tfplan
     expire_in: 1 week
 
 apply_prod:
